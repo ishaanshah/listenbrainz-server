@@ -22,7 +22,7 @@ module.exports = function (env) {
     mode: isProd ? "production" : "development",
     entry: {
       main: "/static/js/src/RecentListens.tsx",
-      import: "/static/js/src/LastFMImporter.tsx",
+      import: "/static/js/src/Importer.tsx",
       userEntityChart: "/static/js/src/stats/UserEntityChart.tsx",
       userReports: "/static/js/src/stats/UserReports.tsx",
       userPageHeading: "/static/js/src/UserPageHeading.tsx",

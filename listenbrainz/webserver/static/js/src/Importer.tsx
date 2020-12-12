@@ -1,307 +1,180 @@
+import * as ReactDOM from "react-dom";
 import * as React from "react";
-import { faSpinner, faCheck } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { IconProp } from "@fortawesome/fontawesome-svg-core";
-import Scrobble from "./Scrobble";
-import APIService from "./APIService";
-import { ImporterProps } from "./LastFMImporter";
+import LastFMImporter from "./LastFMImporter";
 
-export default class Importer {
-  APIService: APIService;
+import ImporterModal from "./ImporterModal";
 
-  private lastfmUsername: string;
-  private lastfmURL: string;
-  private lastfmKey: string;
+export type ImporterProps = {
+  user: {
+    id?: string;
+    name: string;
+    auth_token: string;
+  };
+  profileUrl?: string;
+  apiUrl?: string;
+  lastfmApiUrl: string;
+  lastfmApiKey: string;
+};
 
-  private userName: string;
-  private userToken: string;
+export type ImporterState = {
+  show: boolean;
+  canClose: boolean;
+  lastfmUsername: string;
+  msg: string;
+};
 
-  private page = 1;
-  private totalPages = 0;
+export default class Importer extends React.Component<
+  ImporterProps,
+  ImporterState
+> {
+  importer: any;
 
-  private playCount = -1; // the number of scrobbles reported by Last.FM
-  private countReceived = 0; // number of scrobbles the Last.FM API sends us, this can be diff from playCount
+  constructor(props: ImporterProps) {
+    super(props);
 
-  private latestImportTime = 0; // the latest timestamp that we've imported earlier
-  private maxTimestampForImport = 0; // the latest listen found in this import
-  private incrementalImport = false;
-
-  private numCompleted = 0; // number of pages completed till now
-
-  // Variables used to honor LB's rate limit
-  private rlRemain = -1;
-  private rlReset = -1;
-  private rlOrigin = -1;
-
-  public msg?: React.ReactElement; // Message to be displayed in modal
-  public canClose = true;
-
-  constructor(lastfmUsername: string, private props: ImporterProps) {
-    this.APIService = new APIService(
-      props.apiUrl || `${window.location.origin}/1`
-    ); // Used to access LB API
-
-    this.lastfmUsername = lastfmUsername;
-    this.lastfmURL = props.lastfmApiUrl;
-    this.lastfmKey = props.lastfmApiKey;
-
-    this.userName = props.user.name;
-    this.userToken = props.user.auth_token || "";
-  }
-
-  async startImport() {
-    this.canClose = false; // Disable the close button
-    this.updateMessage(<p>Your import from Last.fm is starting!</p>);
-    this.playCount = await this.getTotalNumberOfScrobbles();
-    this.latestImportTime = await this.APIService.getLatestImport(
-      this.userName
-    );
-    this.incrementalImport = this.latestImportTime > 0;
-    this.totalPages = await this.getNumberOfPages();
-    this.page = this.totalPages; // Start from the last page so that oldest scrobbles are imported first
-
-    while (this.page > 0) {
-      // Fixing no-await-in-loop will require significant changes to the code, ignoring for now
-      const payload = await this.getPage(this.page); // eslint-disable-line
-      if (payload) {
-        // Submit only if response is valid
-        this.submitPage(payload);
-      }
-
-      this.page -= 1;
-      this.numCompleted += 1;
-
-      // Update message
-      const msg = (
-        <p>
-          <FontAwesomeIcon icon={faSpinner as IconProp} spin /> Sending page{" "}
-          {this.numCompleted} of {this.totalPages} to ListenBrainz <br />
-          <span style={{ fontSize: `${8}pt` }}>
-            {this.incrementalImport && (
-              <span>
-                Note: This import will stop at the starting point of your last
-                import. :)
-                <br />
-              </span>
-            )}
-            <span>Please don&apos;t close this page while this is running</span>
-          </span>
-        </p>
-      );
-      this.updateMessage(msg);
-    }
-
-    // Update latest import time on LB server
-    try {
-      this.maxTimestampForImport = Math.max(
-        Number(this.maxTimestampForImport),
-        this.latestImportTime
-      );
-      this.APIService.setLatestImport(
-        this.userToken,
-        this.maxTimestampForImport
-      );
-    } catch {
-      // console.warn("Error setting latest import timestamp, retrying in 3s");
-      setTimeout(
-        () =>
-          this.APIService.setLatestImport(
-            this.userToken,
-            this.maxTimestampForImport
-          ),
-        3000
-      );
-    }
-    const finalMsg = (
-      <p>
-        <FontAwesomeIcon icon={faCheck as IconProp} /> Import finished
-        <br />
-        <span style={{ fontSize: `${8}pt` }}>
-          Successfully submitted {this.countReceived} listens to ListenBrainz
-          <br />
-        </span>
-        {/* if the count received is different from the api count, show a message accordingly
-         * also don't show this message if it's an incremental import, because countReceived
-         * and playCount will be different by definition in incremental imports
-         */}
-        {!this.incrementalImport &&
-          this.playCount !== -1 &&
-          this.countReceived !== this.playCount && (
-            <b>
-              <span style={{ fontSize: `${10}pt` }} className="text-danger">
-                The number submitted listens is different from the{" "}
-                {this.playCount} that Last.fm reports due to an inconsistency in
-                their API, sorry!
-                <br />
-              </span>
-            </b>
-          )}
-        <span style={{ fontSize: `${8}pt` }}>
-          Thank you for using ListenBrainz!
-        </span>
-        <br />
-        <br />
-        <span style={{ fontSize: `${10}pt` }}>
-          <a href={`${this.props.profileUrl}`}>
-            Close and go to your ListenBrainz profile
-          </a>
-        </span>
-      </p>
-    );
-    this.updateMessage(finalMsg);
-    this.canClose = true;
-  }
-
-  async getTotalNumberOfScrobbles() {
-    /*
-     * Get the total play count reported by Last.FM for user
-     */
-
-    const url = `${this.lastfmURL}?method=user.getinfo&user=${this.lastfmUsername}&api_key=${this.lastfmKey}&format=json`;
-    try {
-      const response = await fetch(encodeURI(url));
-      const data = await response.json();
-      if ("playcount" in data.user) {
-        return Number(data.user.playcount);
-      }
-      return -1;
-    } catch {
-      this.updateMessage(<p>An error occurred, please try again. :(</p>);
-      this.canClose = true; // Enable the close button
-      const error = new Error();
-      error.message = "Something went wrong";
-      throw error;
-    }
-  }
-
-  async getNumberOfPages() {
-    /*
-     * Get the total pages of data from last import
-     */
-
-    const url = `${this.lastfmURL}?method=user.getrecenttracks&user=${
-      this.lastfmUsername
-    }&api_key=${this.lastfmKey}&from=${this.latestImportTime + 1}&format=json`;
-    try {
-      const response = await fetch(encodeURI(url));
-      const data = await response.json();
-      if ("recenttracks" in data) {
-        return Number(data.recenttracks["@attr"].totalPages);
-      }
-      return 0;
-    } catch (error) {
-      this.updateMessage(<p>An error occurred, please try again. :(</p>);
-      this.canClose = true; // Enable the close button
-      return -1;
-    }
-  }
-
-  async getPage(page: number) {
-    /*
-     * Fetch page from Last.fm
-     */
-
-    const retry = (reason: string) => {
-      // console.warn(`${reason} while fetching last.fm page=${page}, retrying in 3s`);
-      setTimeout(() => this.getPage(page), 3000);
+    this.state = {
+      show: false,
+      canClose: true,
+      lastfmUsername: "",
+      msg: "",
     };
-
-    const url = `${this.lastfmURL}?method=user.getrecenttracks&user=${
-      this.lastfmUsername
-    }&api_key=${this.lastfmKey}&from=${
-      this.latestImportTime + 1
-    }&page=${page}&format=json`;
-    try {
-      const response = await fetch(encodeURI(url));
-      if (response.ok) {
-        const data = await response.json();
-        // Set latest import time
-        if ("date" in data.recenttracks.track[0]) {
-          this.maxTimestampForImport = Math.max(
-            data.recenttracks.track[0].date.uts,
-            this.maxTimestampForImport
-          );
-        } else {
-          this.maxTimestampForImport = Math.floor(Date.now() / 1000);
-        }
-
-        // Encode the page so that it can be submitted
-        const payload = Importer.encodeScrobbles(data);
-        this.countReceived += payload.length;
-        return payload;
-      }
-      if (/^5/.test(response.status.toString())) {
-        retry(`Got ${response.status}`);
-      } else {
-        // ignore 40x
-        // console.warn(`Got ${response.status} while fetching page last.fm page=${page}, skipping`);
-      }
-    } catch {
-      // Retry if there is a network error
-      retry("Error");
-    }
-    return null;
   }
 
-  async submitPage(payload: Array<Listen>) {
-    const delay = this.getRateLimitDelay();
-    // Halt execution for some time
-    await new Promise((resolve) => {
-      setTimeout(resolve, delay);
-    });
-
-    const response = await this.APIService.submitListens(
-      this.userToken,
-      "import",
-      payload
-    );
-    this.updateRateLimitParameters(response);
-  }
-
-  static encodeScrobbles(scrobbles: LastFmScrobblePage): any {
-    const rawScrobbles = scrobbles.recenttracks.track;
-    const parsedScrobbles = Importer.map((rawScrobble: any) => {
-      const scrobble = new Scrobble(rawScrobble);
-      return scrobble.asJSONSerializable();
-    }, rawScrobbles);
-    return parsedScrobbles;
-  }
-
-  static map(applicable: (collection: any) => Listen, collection: any) {
-    const newCollection = [];
-    for (let i = 0; i < collection.length; i += 1) {
-      const result = applicable(collection[i]);
-      if (result.listened_at > 0) {
-        // If the 'listened_at' attribute is -1 then either the listen is invalid or the
-        // listen is currently playing. In both cases we need to skip the submission.
-        newCollection.push(result);
-      }
-    }
-    return newCollection;
-  }
-
-  updateMessage = (msg: React.ReactElement) => {
-    this.msg = msg;
+  handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    this.setState({ lastfmUsername: event.target.value });
   };
 
-  getRateLimitDelay() {
-    /* Get the amount of time we should wait according to LB rate limits before making a request to LB */
-    let delay = 0;
-    const current = new Date().getTime() / 1000;
-    if (this.rlReset < 0 || current > this.rlOrigin + this.rlReset) {
-      delay = 0;
-    } else if (this.rlRemain > 0) {
-      delay = Math.max(0, Math.ceil((this.rlReset * 1000) / this.rlRemain));
-    } else {
-      delay = Math.max(0, Math.ceil(this.rlReset * 1000));
-    }
-    return delay;
-  }
+  handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    const { lastfmUsername } = this.state;
+    this.toggleModal();
+    event.preventDefault();
+    this.importer = new LastFMImporter(lastfmUsername, this.props);
+    setInterval(this.updateMessage, 100);
+    setInterval(this.setClose, 100);
+    this.importer.startImport();
+  };
 
-  updateRateLimitParameters(response: Response) {
-    /* Update the variables we use to honor LB's rate limits */
-    this.rlRemain = Number(response.headers.get("X-RateLimit-Remaining"));
-    this.rlReset = Number(response.headers.get("X-RateLimit-Reset-In"));
-    this.rlOrigin = new Date().getTime() / 1000;
+  toggleModal = () => {
+    this.setState((prevState) => {
+      return { show: !prevState.show };
+    });
+  };
+
+  setClose = () => {
+    this.setState({ canClose: this.importer.canClose });
+  };
+
+  updateMessage = () => {
+    this.setState({ msg: this.importer.msg });
+  };
+
+  render() {
+    const { show, canClose, lastfmUsername, msg } = this.state;
+
+    return (
+      <>
+        <p>Most users will want to import from Last.fm directly.</p>
+        <h3>Direct import from Last.fm</h3>
+        <p>
+          The Last.fm importer manually steps through your listen history and
+          imports the listens one page at a time. Should it fail for whatever
+          reason, it is safe to restart the import process. Running the import
+          process multiple times <strong>does not</strong> create duplicates in
+          your ListenBrainz listen history.
+        </p>
+        <p>
+          In order for this to work, you must disable the &#34;Hide recent
+          listening information&#34; setting in your Last.fm{" "}
+          <a href="https://www.last.fm/settings/privacy">Privacy Settings</a>.
+        </p>
+        <p>
+          Clicking the &quot;Import now!&qout; button will import your profile
+          now without the need to open lastfm.
+          <br />
+          You need to keep this page open for the tool to work, it might take a
+          while to complete. Though, you can continue doing your work. :)
+        </p>
+        <p>We need to know your Last.fm username:</p>
+        <div className="well">
+          <div className="Importer">
+            <form onSubmit={this.handleSubmit}>
+              <input
+                type="text"
+                onChange={this.handleChange}
+                value={lastfmUsername}
+                placeholder="Last.fm Username"
+                size={30}
+              />
+              <input
+                type="submit"
+                value="Import Now!"
+                disabled={!lastfmUsername}
+              />
+            </form>
+            {show && (
+              <ImporterModal onClose={this.toggleModal} disable={!canClose}>
+                <img
+                  src="/static/img/listenbrainz-logo.svg"
+                  height="75"
+                  className="img-responsive"
+                  alt=""
+                />
+                <br />
+                <br />
+                <div>{msg}</div>
+                <br />
+              </ImporterModal>
+            )}
+          </div>
+        </div>
+
+        <h3> Import from Spotify </h3>
+        <p>
+          ListenBrainz can automatically import songs from Spotify as you listen
+          to them.
+        </p>
+        <p>
+          Importing the same listens from two different sources such as Last.FM
+          and Spotify may cause the creation of duplicates in your listen
+          history. If you opt into our automatic Spotify import, please do not
+          use the Last.FM import or submit listens from other ListenBrainz
+          clients. This is a temporary limitation while we find better ways to
+          deduplicate listens.
+        </p>
+        <p>
+          <a href={`{window.location.origin}/profile/connect-spotify`}>
+            Connect your Spotify account to ListenBrainz.
+          </a>
+        </p>
+      </>
+    );
   }
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  const domContainer = document.querySelector("#react-container");
+  const propsElement = document.getElementById("react-props");
+  let reactProps;
+  try {
+    reactProps = JSON.parse(propsElement!.innerHTML);
+  } catch (err) {
+    // Show error to the user and ask to reload page
+  }
+  const {
+    user,
+    profile_url,
+    api_url,
+    lastfm_api_url,
+    lastfm_api_key,
+  } = reactProps;
+  ReactDOM.render(
+    <Importer
+      user={user}
+      profileUrl={profile_url}
+      apiUrl={api_url}
+      lastfmApiKey={lastfm_api_key}
+      lastfmApiUrl={lastfm_api_url}
+    />,
+    domContainer
+  );
+});

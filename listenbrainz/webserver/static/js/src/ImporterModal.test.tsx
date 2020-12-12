@@ -1,7 +1,7 @@
 import * as React from "react";
 import { mount, shallow } from "enzyme";
 
-import LastFMImporterModal from "./LastFMImporterModal";
+import ImporterModal from "./ImporterModal";
 
 const props = {
   disable: false,
@@ -9,14 +9,14 @@ const props = {
   onClose: (event: React.MouseEvent<HTMLButtonElement>) => {},
 };
 
-describe("LastFmImporterModal", () => {
+describe("ImporterModal", () => {
   it("renders", () => {
-    const wrapper = mount(<LastFMImporterModal {...props} />);
+    const wrapper = mount(<ImporterModal {...props} />);
     expect(wrapper.html()).toMatchSnapshot();
   });
 
   it("close button is disabled/enabled based upon props", () => {
-    const wrapper = shallow(<LastFMImporterModal {...props} />);
+    const wrapper = shallow(<ImporterModal {...props} />);
     // Test if close button is disabled
     wrapper.setProps({ disable: true });
     expect(wrapper.find("button").props().disabled).toBe(true);
